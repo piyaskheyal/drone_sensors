@@ -16,8 +16,8 @@ const char *password = "asoleikheyalpare";
 #define SOIL_PIN 33
 #define RC_PIN 26
 #define MOTOR_PWM 27
-#define MOTOR_IN1 14
-#define MOTOR_IN2 12
+#define MOTOR_IN1 16
+#define MOTOR_IN2 17
 
 uint16_t currentGasThreshold = 2000;
 GasSensor gasSensor(GAS_PIN, currentGasThreshold);
