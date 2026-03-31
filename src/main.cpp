@@ -5,8 +5,8 @@
 #include <SoilSensor.h>
 
 // WiFi Configuration - UPDATE THESE LATER
-const char *ssid = "YOUR_SSID";
-const char *password = "YOUR_PASSWORD";
+const char *ssid = "Router 01";
+const char *password = "kheyal2g";
 
 // Hardware Pins (ADC1 pins: 32, 33, 34, 35, 36, 39 to work with WiFi active)
 #define GAS_PIN 32
@@ -120,7 +120,7 @@ void updateSensors()
 void setupRouting()
 {
     server.on("/", HTTP_GET, [](AsyncWebServerRequest *request)
-              { request->send_P(200, "text/html", index_html); });
+              { request->send(200, "text/html", index_html); });
 
     server.on("/api/data", HTTP_GET, [](AsyncWebServerRequest *request)
               {
