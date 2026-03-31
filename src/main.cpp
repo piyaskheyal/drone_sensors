@@ -3,20 +3,44 @@
 #include <ESPAsyncWebServer.h>
 #include <GasSensor.h>
 #include <SoilSensor.h>
+#include "MotorControl.h"
 
 // WiFi Configuration - UPDATE THESE LATER
 const char *ssid = "Router 01";
 const char *password = "kheyal2g";
 
+#define DEBUG 0 // Set to 1 to see prints, 0 to hide them
+
 // Hardware Pins (ADC1 pins: 32, 33, 34, 35, 36, 39 to work with WiFi active)
 #define GAS_PIN 32
 #define SOIL_PIN 33
+#define RC_PIN 26
+#define MOTOR_PWM 27
+#define MOTOR_IN1 14
+#define MOTOR_IN2 12
 
 uint16_t currentGasThreshold = 2000;
 GasSensor gasSensor(GAS_PIN, currentGasThreshold);
 SoilSensor soilSensor(SOIL_PIN);
+MotorControl motor(MOTOR_PWM, MOTOR_IN1, MOTOR_IN2);
 
 AsyncWebServer server(80);
+
+// Volatile variables for RC interrupt
+volatile unsigned long pulseStartTime = 0;
+volatile unsigned long rcValue = 1500;
+
+// Globals to store current motor state for the web server
+int16_t currentMotorSpeed = 0;
+unsigned long currentRCPulse = 1500;
+
+void IRAM_ATTR handleRCInterrupt() {
+    if (digitalRead(RC_PIN) == HIGH) {
+        pulseStartTime = micros();
+    } else {
+        rcValue = micros() - pulseStartTime;
+    }
+}
 
 struct SensorReadings
 {
@@ -24,6 +48,8 @@ struct SensorReadings
     bool gasHazardous;
     uint16_t soilRaw;
     uint8_t soilPercent;
+    int16_t motorSpeed;
+    unsigned long rcPulse;
 };
 SensorReadings latestReadings;
 
@@ -32,7 +58,7 @@ const long samplingInterval = 1000;
 
 // Embedded HTML UI
 const char index_html[] PROGMEM = R"rawliteral(
-<!DOCTYPE html>
+<!DOCTYPEhtml>
 <html>
 <head>
     <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -68,12 +94,17 @@ const char index_html[] PROGMEM = R"rawliteral(
             <div class="val"><span id="soilValue">--</span>%</div>
             <p>Raw ADC: <span id="soilRaw">--</span></p>
         </div>
+        <div class="card normal" style="border-top-color: #f39c12;">
+            <h2>Motor Status</h2>
+            <div class="val"><span id="motorSpeed">--</span></div>
+            <p>RC Pulse: <span id="rcPulse">--</span> us</p>
+        </div>
     </div>
     <script>
         async function fetchData() {
             try {
                 let res = await fetch('/api/data');
-                if(!res.ok) return;
+                if(!res.ok)return;
                 let data = await res.json();
                 
                 document.getElementById('gasValue').innerText = data.gas.raw;
@@ -94,6 +125,10 @@ const char index_html[] PROGMEM = R"rawliteral(
                 
                 document.getElementById('soilValue').innerText = data.soil.percentage;
                 document.getElementById('soilRaw').innerText = data.soil.raw;
+
+                // Motor updates
+                document.getElementById('motorSpeed').innerText = data.motor.speed;
+                document.getElementById('rcPulse').innerText = data.motor.pulse;
             } catch(e) { console.error(e); }
         }
         setInterval(fetchData, 1000);
@@ -109,12 +144,18 @@ void updateSensors()
     latestReadings.gasHazardous = gasSensor.isHazardous();
     latestReadings.soilRaw = soilSensor.readMoistureRaw();
     latestReadings.soilPercent = soilSensor.readMoisturePercentage();
+    latestReadings.motorSpeed = currentMotorSpeed;
+    latestReadings.rcPulse = currentRCPulse;
 
-    Serial.printf("Gas: %d %s | Soil: %d%% (%d)\n",
+#if DEBUG
+    Serial.printf("Gas: %d %s | Soil: %d%% (%d) | Motor: %d (RC: %lu)\n",
                   latestReadings.gasRaw,
                   (latestReadings.gasHazardous ? "[HAZ]" : "[SAFE]"),
                   latestReadings.soilPercent,
-                  latestReadings.soilRaw);
+                  latestReadings.soilRaw,
+                  latestReadings.motorSpeed,
+                  latestReadings.rcPulse);
+#endif
 }
 
 void setupRouting()
@@ -129,35 +170,53 @@ void setupRouting()
         json += "\"threshold\":" + String(gasSensor.getThreshold()) + ",";
         json += "\"hazardous\":" + String(latestReadings.gasHazardous ? "true" : "false") + "},";
         json += "\"soil\":{\"raw\":" + String(latestReadings.soilRaw) + ",";
-        json += "\"percentage\":" + String(latestReadings.soilPercent) + "}}";
+        json += "\"percentage\":" + String(latestReadings.soilPercent) + "},";
+        json += "\"motor\":{\"speed\":" + String(latestReadings.motorSpeed) + ",";
+        json += "\"pulse\":" + String(latestReadings.rcPulse) + "}}";
         request->send(200, "application/json", json); });
 }
 
 void setup()
 {
+#if DEBUG
     Serial.begin(115200);
+#endif
+
     gasSensor.begin();
     soilSensor.begin();
+    
+    // Motor and RC initialization
+    motor.begin();
+    pinMode(RC_PIN, INPUT);
+    attachInterrupt(digitalPinToInterrupt(RC_PIN), handleRCInterrupt, CHANGE);
 
     WiFi.mode(WIFI_STA);
     WiFi.begin(ssid, password);
+#if DEBUG
     Serial.print("Connecting to WiFi");
+#endif
 
     uint8_t retries = 0;
     while (WiFi.status() != WL_CONNECTED && retries < 20)
     {
         delay(500);
+#if DEBUG
         Serial.print(".");
+#endif
         retries++;
     }
     if (WiFi.status() == WL_CONNECTED)
     {
+#if DEBUG
         Serial.println("\nConnected. IP: ");
         Serial.println(WiFi.localIP());
+#endif
     }
     else
     {
+#if DEBUG
         Serial.println("\nWiFi Failed. Running offline.");
+#endif
     }
 
     setupRouting();
@@ -166,6 +225,26 @@ void setup()
 
 void loop()
 {
+    // High-frequency responsive motor control
+    noInterrupts();
+    unsigned long currentRC = rcValue;
+    interrupts();
+    
+    int16_t motorSpeed = 0;
+    if (currentRC > 1550 && currentRC <= 2000) {
+        motorSpeed = map(currentRC, 1550, 2000, 0, 255);
+    } 
+    else if (currentRC < 1450 && currentRC >= 999) {
+        motorSpeed = map(currentRC, 1450, 999, 0, -255);
+    }
+
+    motor.setSpeed(motorSpeed);
+    
+    // Save for the web interface updates
+    currentMotorSpeed = motorSpeed;
+    currentRCPulse = currentRC;
+
+    // Routine low-frequency sensor reading for Web UI (1 second interval)
     unsigned long currentMillis = millis();
     if (currentMillis - previousMillis >= samplingInterval)
     {
