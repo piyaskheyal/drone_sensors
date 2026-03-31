@@ -6,10 +6,10 @@
 #include "MotorControl.h"
 
 // WiFi Configuration - UPDATE THESE LATER
-const char *ssid = "Router 01";
-const char *password = "kheyal2g";
+const char *ssid = "kheyalpare";
+const char *password = "asoleikheyalpare";
 
-#define DEBUG 0 // Set to 1 to see prints, 0 to hide them
+#define DEBUG 1 // Set to 1 to see prints, 0 to hide them
 
 // Hardware Pins (ADC1 pins: 32, 33, 34, 35, 36, 39 to work with WiFi active)
 #define GAS_PIN 32
@@ -251,4 +251,7 @@ void loop()
         previousMillis = currentMillis;
         updateSensors();
     }
+    
+    // YIELD TO WATCHDOG / SYSTEM TASKS using a tiny delay
+    delay(2);
 }
