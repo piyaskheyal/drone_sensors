@@ -3,7 +3,7 @@
 #include <ESPAsyncWebServer.h>
 #include <GasSensor.h>
 #include <SoilSensor.h>
-#include "MotorControl.h"
+#include <SeedDispenser.h>
 
 // WiFi Configuration - UPDATE THESE LATER
 const char *ssid = "kheyalpare";
@@ -14,33 +14,14 @@ const char *password = "asoleikheyalpare";
 // Hardware Pins (ADC1 pins: 32, 33, 34, 35, 36, 39 to work with WiFi active)
 #define GAS_PIN 32
 #define SOIL_PIN 33
-#define RC_PIN 26
-#define MOTOR_PWM 27
-#define MOTOR_IN1 16
-#define MOTOR_IN2 17
+#define SERVO_PIN 18
 
 uint16_t currentGasThreshold = 2000;
 GasSensor gasSensor(GAS_PIN, currentGasThreshold);
 SoilSensor soilSensor(SOIL_PIN);
-MotorControl motor(MOTOR_PWM, MOTOR_IN1, MOTOR_IN2);
+SeedDispenser dispenser(SERVO_PIN);
 
 AsyncWebServer server(80);
-
-// Volatile variables for RC interrupt
-volatile unsigned long pulseStartTime = 0;
-volatile unsigned long rcValue = 1500;
-
-// Globals to store current motor state for the web server
-int16_t currentMotorSpeed = 0;
-unsigned long currentRCPulse = 1500;
-
-void IRAM_ATTR handleRCInterrupt() {
-    if (digitalRead(RC_PIN) == HIGH) {
-        pulseStartTime = micros();
-    } else {
-        rcValue = micros() - pulseStartTime;
-    }
-}
 
 struct SensorReadings
 {
@@ -48,8 +29,8 @@ struct SensorReadings
     bool gasHazardous;
     uint16_t soilRaw;
     uint8_t soilPercent;
-    int16_t motorSpeed;
-    unsigned long rcPulse;
+    unsigned long dispenserInterval;
+    bool dispenserOpen;
 };
 SensorReadings latestReadings;
 
@@ -95,12 +76,29 @@ const char index_html[] PROGMEM = R"rawliteral(
             <p>Raw ADC: <span id="soilRaw">--</span></p>
         </div>
         <div class="card normal" style="border-top-color: #f39c12;">
-            <h2>Motor Status</h2>
-            <div class="val"><span id="motorSpeed">--</span></div>
-            <p>RC Pulse: <span id="rcPulse">--</span> us</p>
+            <h2>Seed Dispenser</h2>
+            <div class="val" id="dispenserState">--</div>
+            <p>Interval: <span id="dispenserInterval">--</span> ms</p>
+            <div style="margin-top: 15px;">
+                <input type="range" id="intervalSlider" min="1000" max="5000" step="100" value="2000" style="width: 100%;">
+                <button onclick="updateInterval()" style="margin-top: 10px; width: 100%; padding: 10px; border-radius: 5px; background: #f39c12; color: white; border: none; font-weight: bold; cursor: pointer;">Set Interval</button>
+            </div>
         </div>
     </div>
     <script>
+        async function updateInterval() {
+            let val = document.getElementById('intervalSlider').value;
+            try {
+                let formData = new URLSearchParams();
+                formData.append('val', val);
+                await fetch('/api/set_interval', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: formData
+                });
+            } catch(e) { console.error('Failed to update interval'); }
+        }
+
         async function fetchData() {
             try {
                 let res = await fetch('/api/data');
@@ -126,9 +124,15 @@ const char index_html[] PROGMEM = R"rawliteral(
                 document.getElementById('soilValue').innerText = data.soil.percentage;
                 document.getElementById('soilRaw').innerText = data.soil.raw;
 
-                // Motor updates
-                document.getElementById('motorSpeed').innerText = data.motor.speed;
-                document.getElementById('rcPulse').innerText = data.motor.pulse;
+                // Dispenser updates
+                document.getElementById('dispenserState').innerText = data.dispenser.isOpen ? "OPEN" : "CLOSED";
+                document.getElementById('dispenserState').style.color = data.dispenser.isOpen ? "#2ecc71" : "#e74c3c";
+                document.getElementById('dispenserInterval').innerText = data.dispenser.interval;
+                
+                // Only update slider if user isn't interacting with it
+                if (document.activeElement !== document.getElementById('intervalSlider')) {
+                    document.getElementById('intervalSlider').value = data.dispenser.interval;
+                }
             } catch(e) { console.error(e); }
         }
         setInterval(fetchData, 1000);
@@ -144,17 +148,17 @@ void updateSensors()
     latestReadings.gasHazardous = gasSensor.isHazardous();
     latestReadings.soilRaw = soilSensor.readMoistureRaw();
     latestReadings.soilPercent = soilSensor.readMoisturePercentage();
-    latestReadings.motorSpeed = currentMotorSpeed;
-    latestReadings.rcPulse = currentRCPulse;
+    latestReadings.dispenserInterval = dispenser.getInterval();
+    latestReadings.dispenserOpen = dispenser.getIsOpen();
 
 #if DEBUG
-    Serial.printf("Gas: %d %s | Soil: %d%% (%d) | Motor: %d (RC: %lu)\n",
+    Serial.printf("Gas: %d %s | Soil: %d%% (%d) | Dispenser: %lu ms (Open: %s)\n",
                   latestReadings.gasRaw,
                   (latestReadings.gasHazardous ? "[HAZ]" : "[SAFE]"),
                   latestReadings.soilPercent,
                   latestReadings.soilRaw,
-                  latestReadings.motorSpeed,
-                  latestReadings.rcPulse);
+                  latestReadings.dispenserInterval,
+                  latestReadings.dispenserOpen ? "YES" : "NO");
 #endif
 }
 
@@ -171,9 +175,20 @@ void setupRouting()
         json += "\"hazardous\":" + String(latestReadings.gasHazardous ? "true" : "false") + "},";
         json += "\"soil\":{\"raw\":" + String(latestReadings.soilRaw) + ",";
         json += "\"percentage\":" + String(latestReadings.soilPercent) + "},";
-        json += "\"motor\":{\"speed\":" + String(latestReadings.motorSpeed) + ",";
-        json += "\"pulse\":" + String(latestReadings.rcPulse) + "}}";
+        json += "\"dispenser\":{\"interval\":" + String(latestReadings.dispenserInterval) + ",";
+        json += "\"isOpen\":" + String(latestReadings.dispenserOpen ? "true" : "false") + "}}";
         request->send(200, "application/json", json); });
+
+    server.on("/api/set_interval", HTTP_POST, [](AsyncWebServerRequest *request)
+              {
+        if (request->hasParam("val", true)) {
+            String valStr = request->getParam("val", true)->value();
+            unsigned long newInterval = valStr.toInt();
+            dispenser.setInterval(newInterval);
+            request->send(200, "text/plain", "Interval updated");
+        } else {
+            request->send(400, "text/plain", "Missing val parameter");
+        } });
 }
 
 void setup()
@@ -185,10 +200,8 @@ void setup()
     gasSensor.begin();
     soilSensor.begin();
     
-    // Motor and RC initialization
-    motor.begin();
-    pinMode(RC_PIN, INPUT);
-    attachInterrupt(digitalPinToInterrupt(RC_PIN), handleRCInterrupt, CHANGE);
+    // Dispenser initialization
+    dispenser.begin();
 
     WiFi.mode(WIFI_STA);
     WiFi.begin(ssid, password);
@@ -225,24 +238,8 @@ void setup()
 
 void loop()
 {
-    // High-frequency responsive motor control
-    noInterrupts();
-    unsigned long currentRC = rcValue;
-    interrupts();
-    
-    int16_t motorSpeed = 0;
-    if (currentRC > 1550 && currentRC <= 2000) {
-        motorSpeed = map(currentRC, 1550, 2000, 0, 255);
-    } 
-    else if (currentRC < 1450 && currentRC >= 999) {
-        motorSpeed = map(currentRC, 1450, 999, 0, -255);
-    }
-
-    motor.setSpeed(motorSpeed);
-    
-    // Save for the web interface updates
-    currentMotorSpeed = motorSpeed;
-    currentRCPulse = currentRC;
+    // Update the servo dispenser state non-blocking
+    dispenser.update();
 
     // Routine low-frequency sensor reading for Web UI (1 second interval)
     unsigned long currentMillis = millis();
