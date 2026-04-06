@@ -18,6 +18,10 @@ public:
     
     // Determine current state for reporting
     bool getIsOpen() const;
+    
+    // Toggle operation
+    void setEnabled(bool enable);
+    bool getEnabled() const;
 
 private:
     uint8_t servoPin;
@@ -28,6 +32,7 @@ private:
 
     unsigned long stateStartTime;
     bool isOpen;
+    bool isEnabled;
 };
 
 #endif

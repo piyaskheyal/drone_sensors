@@ -1,6 +1,6 @@
 #include "SeedDispenser.h"
 
-SeedDispenser::SeedDispenser(uint8_t pin) : servoPin(pin), closedInterval(2000), isOpen(false), stateStartTime(0) {
+SeedDispenser::SeedDispenser(uint8_t pin) : servoPin(pin), closedInterval(2000), isOpen(false), stateStartTime(0), isEnabled(false) {
     // 2s default duration, closed state
 }
 
@@ -29,7 +29,27 @@ bool SeedDispenser::getIsOpen() const {
     return isOpen;
 }
 
+bool SeedDispenser::getEnabled() const {
+    return isEnabled;
+}
+
+void SeedDispenser::setEnabled(bool enable) {
+    isEnabled = enable;
+    if (!isEnabled) {
+        // Disabling: force closed position immediately
+        isOpen = false;
+        servo.write(0);
+    } else {
+        // Enabling: start in closed position, reset timer
+        isOpen = false;
+        servo.write(0);
+        stateStartTime = millis();
+    }
+}
+
 void SeedDispenser::update() {
+    if (!isEnabled) return;
+
     unsigned long currentMillis = millis();
     unsigned long timeInState = currentMillis - stateStartTime;
     

@@ -30,7 +30,7 @@ struct SensorReadings
     uint16_t soilRaw;
     uint8_t soilPercent;
     unsigned long dispenserInterval;
-    bool dispenserOpen;
+    bool dispenserEnabled;
 };
 SensorReadings latestReadings;
 
@@ -77,11 +77,16 @@ const char index_html[] PROGMEM = R"rawliteral(
         </div>
         <div class="card normal" style="border-top-color: #f39c12;">
             <h2>Seed Dispenser</h2>
-            <div class="val" id="dispenserState">--</div>
-            <p>Interval: <span id="dispenserInterval">--</span> ms</p>
+            <div style="margin: 15px 0;">
+                <label style="font-size: 1.5rem; font-weight: bold; display: flex; align-items: center; justify-content: center; gap: 10px; cursor: pointer;">
+                    <input type="checkbox" id="dispenserToggle" onchange="toggleDispenser()" style="width: 25px; height: 25px;">
+                    <span id="dispenserStatusText">System Off</span>
+                </label>
+            </div>
+            <p>Frequency: <span id="dispenserInterval">--</span> s</p>
             <div style="margin-top: 15px;">
-                <input type="range" id="intervalSlider" min="1000" max="5000" step="100" value="2000" style="width: 100%;">
-                <button onclick="updateInterval()" style="margin-top: 10px; width: 100%; padding: 10px; border-radius: 5px; background: #f39c12; color: white; border: none; font-weight: bold; cursor: pointer;">Set Interval</button>
+                <input type="range" id="intervalSlider" min="1" max="5" step="0.1" value="2" style="width: 100%;">
+                <button onclick="updateInterval()" style="margin-top: 10px; width: 100%; padding: 10px; border-radius: 5px; background: #f39c12; color: white; border: none; font-weight: bold; cursor: pointer;">Set Frequency</button>
             </div>
         </div>
     </div>
@@ -90,13 +95,26 @@ const char index_html[] PROGMEM = R"rawliteral(
             let val = document.getElementById('intervalSlider').value;
             try {
                 let formData = new URLSearchParams();
-                formData.append('val', val);
+                formData.append('val', val * 1000); // Scale up to ms for backend
                 await fetch('/api/set_interval', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
                     body: formData
                 });
             } catch(e) { console.error('Failed to update interval'); }
+        }
+
+        async function toggleDispenser() {
+            let isEnabled = document.getElementById('dispenserToggle').checked;
+            try {
+                let formData = new URLSearchParams();
+                formData.append('enable', isEnabled ? '1' : '0');
+                await fetch('/api/toggle_dispenser', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: formData
+                });
+            } catch(e) { console.error('Failed to toggle dispenser'); }
         }
 
         async function fetchData() {
@@ -125,13 +143,22 @@ const char index_html[] PROGMEM = R"rawliteral(
                 document.getElementById('soilRaw').innerText = data.soil.raw;
 
                 // Dispenser updates
-                document.getElementById('dispenserState').innerText = data.dispenser.isOpen ? "OPEN" : "CLOSED";
-                document.getElementById('dispenserState').style.color = data.dispenser.isOpen ? "#2ecc71" : "#e74c3c";
-                document.getElementById('dispenserInterval').innerText = data.dispenser.interval;
+                let intervalSec = (data.dispenser.interval / 1000.0).toFixed(1);
+                document.getElementById('dispenserInterval').innerText = intervalSec;
+                
+                let toggle = document.getElementById('dispenserToggle');
+                let statusText = document.getElementById('dispenserStatusText');
+                
+                if (document.activeElement !== toggle) {
+                    toggle.checked = data.dispenser.enabled;
+                }
+                
+                statusText.innerText = data.dispenser.enabled ? "System On " : "System Off";
+                statusText.style.color = data.dispenser.enabled ? "#2ecc71" : "#e74c3c";
                 
                 // Only update slider if user isn't interacting with it
                 if (document.activeElement !== document.getElementById('intervalSlider')) {
-                    document.getElementById('intervalSlider').value = data.dispenser.interval;
+                    document.getElementById('intervalSlider').value = intervalSec;
                 }
             } catch(e) { console.error(e); }
         }
@@ -149,16 +176,16 @@ void updateSensors()
     latestReadings.soilRaw = soilSensor.readMoistureRaw();
     latestReadings.soilPercent = soilSensor.readMoisturePercentage();
     latestReadings.dispenserInterval = dispenser.getInterval();
-    latestReadings.dispenserOpen = dispenser.getIsOpen();
+    latestReadings.dispenserEnabled = dispenser.getEnabled();
 
 #if DEBUG
-    Serial.printf("Gas: %d %s | Soil: %d%% (%d) | Dispenser: %lu ms (Open: %s)\n",
+    Serial.printf("Gas: %d %s | Soil: %d%% (%d) | Dispenser: %lu ms (Enabled: %s)\n",
                   latestReadings.gasRaw,
                   (latestReadings.gasHazardous ? "[HAZ]" : "[SAFE]"),
                   latestReadings.soilPercent,
                   latestReadings.soilRaw,
                   latestReadings.dispenserInterval,
-                  latestReadings.dispenserOpen ? "YES" : "NO");
+                  latestReadings.dispenserEnabled ? "YES" : "NO");
 #endif
 }
 
@@ -176,7 +203,7 @@ void setupRouting()
         json += "\"soil\":{\"raw\":" + String(latestReadings.soilRaw) + ",";
         json += "\"percentage\":" + String(latestReadings.soilPercent) + "},";
         json += "\"dispenser\":{\"interval\":" + String(latestReadings.dispenserInterval) + ",";
-        json += "\"isOpen\":" + String(latestReadings.dispenserOpen ? "true" : "false") + "}}";
+        json += "\"enabled\":" + String(latestReadings.dispenserEnabled ? "true" : "false") + "}}";
         request->send(200, "application/json", json); });
 
     server.on("/api/set_interval", HTTP_POST, [](AsyncWebServerRequest *request)
@@ -188,6 +215,16 @@ void setupRouting()
             request->send(200, "text/plain", "Interval updated");
         } else {
             request->send(400, "text/plain", "Missing val parameter");
+        } });
+
+    server.on("/api/toggle_dispenser", HTTP_POST, [](AsyncWebServerRequest *request)
+              {
+        if (request->hasParam("enable", true)) {
+            bool enable = request->getParam("enable", true)->value() == "1";
+            dispenser.setEnabled(enable);
+            request->send(200, "text/plain", "Dispenser toggled");
+        } else {
+            request->send(400, "text/plain", "Missing enable parameter");
         } });
 }
 
