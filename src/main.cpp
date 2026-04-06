@@ -6,8 +6,8 @@
 #include <SeedDispenser.h>
 
 // WiFi Configuration - UPDATE THESE LATER
-const char *ssid = "kheyalpare";
-const char *password = "asoleikheyalpare";
+const char *ssid = "Test";
+const char *password = "password_123";
 
 #define DEBUG 1 // Set to 1 to see prints, 0 to hide them
 
@@ -155,11 +155,6 @@ const char index_html[] PROGMEM = R"rawliteral(
                 
                 statusText.innerText = data.dispenser.enabled ? "System On " : "System Off";
                 statusText.style.color = data.dispenser.enabled ? "#2ecc71" : "#e74c3c";
-                
-                // Only update slider if user isn't interacting with it
-                if (document.activeElement !== document.getElementById('intervalSlider')) {
-                    document.getElementById('intervalSlider').value = intervalSec;
-                }
             } catch(e) { console.error(e); }
         }
         setInterval(fetchData, 1000);
