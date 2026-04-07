@@ -4,22 +4,25 @@
 #include <GasSensor.h>
 #include <SoilSensor.h>
 #include <SeedDispenser.h>
+#include <DHTSensor.h>
 
 // WiFi Configuration - UPDATE THESE LATER
-const char *ssid = "Test";
-const char *password = "password_123";
+const char *ssid = "drone_network";
+const char *password = "drone_pass";
 
-#define DEBUG 1 // Set to 1 to see prints, 0 to hide them
+#define DEBUG 0 // Set to 1 to see prints, 0 to hide them
 
 // Hardware Pins (ADC1 pins: 32, 33, 34, 35, 36, 39 to work with WiFi active)
 #define GAS_PIN 32
 #define SOIL_PIN 33
 #define SERVO_PIN 18
+#define DHT_PIN 4
 
-uint16_t currentGasThreshold = 2000;
+uint16_t currentGasThreshold = 700;
 GasSensor gasSensor(GAS_PIN, currentGasThreshold);
 SoilSensor soilSensor(SOIL_PIN);
 SeedDispenser dispenser(SERVO_PIN);
+DHTSensor dhtSensor(DHT_PIN);
 
 AsyncWebServer server(80);
 
@@ -31,6 +34,8 @@ struct SensorReadings
     uint8_t soilPercent;
     unsigned long dispenserInterval;
     bool dispenserEnabled;
+    float temperatureCelsius;
+    float humidityPercent;
 };
 SensorReadings latestReadings;
 
@@ -74,6 +79,11 @@ const char index_html[] PROGMEM = R"rawliteral(
             <h2>Soil Moisture</h2>
             <div class="val"><span id="soilValue">--</span>%</div>
             <p>Raw ADC: <span id="soilRaw">--</span></p>
+        </div>
+        <div class="card normal" style="border-top-color: #9b59b6;">
+            <h2>Environment</h2>
+            <div class="val"><span id="tempValue">--</span>&deg;C</div>
+            <p>Humidity: <span id="humValue">--</span>%</p>
         </div>
         <div class="card normal" style="border-top-color: #f39c12;">
             <h2>Seed Dispenser</h2>
@@ -142,6 +152,9 @@ const char index_html[] PROGMEM = R"rawliteral(
                 document.getElementById('soilValue').innerText = data.soil.percentage;
                 document.getElementById('soilRaw').innerText = data.soil.raw;
 
+                document.getElementById('tempValue').innerText = data.dht.temperature;
+                document.getElementById('humValue').innerText = data.dht.humidity;
+
                 // Dispenser updates
                 let intervalSec = (data.dispenser.interval / 1000.0).toFixed(1);
                 document.getElementById('dispenserInterval').innerText = intervalSec;
@@ -166,21 +179,27 @@ const char index_html[] PROGMEM = R"rawliteral(
 
 void updateSensors()
 {
+    dhtSensor.update();
+    
     latestReadings.gasRaw = gasSensor.readRawValue();
     latestReadings.gasHazardous = gasSensor.isHazardous();
     latestReadings.soilRaw = soilSensor.readMoistureRaw();
     latestReadings.soilPercent = soilSensor.readMoisturePercentage();
     latestReadings.dispenserInterval = dispenser.getInterval();
     latestReadings.dispenserEnabled = dispenser.getEnabled();
+    latestReadings.temperatureCelsius = dhtSensor.getTemperature();
+    latestReadings.humidityPercent = dhtSensor.getHumidity();
 
 #if DEBUG
-    Serial.printf("Gas: %d %s | Soil: %d%% (%d) | Dispenser: %lu ms (Enabled: %s)\n",
+    Serial.printf("Gas: %d %s | Soil: %d%% (%d) | Dispenser: %lu ms (Enabled: %s) | Temp: %.1fC | Hum: %.1f%%\n",
                   latestReadings.gasRaw,
                   (latestReadings.gasHazardous ? "[HAZ]" : "[SAFE]"),
                   latestReadings.soilPercent,
                   latestReadings.soilRaw,
                   latestReadings.dispenserInterval,
-                  latestReadings.dispenserEnabled ? "YES" : "NO");
+                  latestReadings.dispenserEnabled ? "YES" : "NO",
+                  latestReadings.temperatureCelsius,
+                  latestReadings.humidityPercent);
 #endif
 }
 
@@ -197,6 +216,8 @@ void setupRouting()
         json += "\"hazardous\":" + String(latestReadings.gasHazardous ? "true" : "false") + "},";
         json += "\"soil\":{\"raw\":" + String(latestReadings.soilRaw) + ",";
         json += "\"percentage\":" + String(latestReadings.soilPercent) + "},";
+        json += "\"dht\":{\"temperature\":" + String(latestReadings.temperatureCelsius, 1) + ",";
+        json += "\"humidity\":" + String(latestReadings.humidityPercent, 1) + "},";
         json += "\"dispenser\":{\"interval\":" + String(latestReadings.dispenserInterval) + ",";
         json += "\"enabled\":" + String(latestReadings.dispenserEnabled ? "true" : "false") + "}}";
         request->send(200, "application/json", json); });
@@ -231,6 +252,7 @@ void setup()
 
     gasSensor.begin();
     soilSensor.begin();
+    dhtSensor.begin();
     
     // Dispenser initialization
     dispenser.begin();

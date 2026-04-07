@@ -9,7 +9,7 @@ void SeedDispenser::begin() {
     servo.setPeriodHertz(50);      // Standard 50Hz servo
     servo.attach(servoPin, 500, 2400); // Attach to pin, min/max pulse width
     
-    servo.write(0);                // Start closed
+    servo.write(90);               // Start closed (90 degrees)
     stateStartTime = millis();
 }
 
@@ -38,11 +38,11 @@ void SeedDispenser::setEnabled(bool enable) {
     if (!isEnabled) {
         // Disabling: force closed position immediately
         isOpen = false;
-        servo.write(0);
+        servo.write(90);
     } else {
         // Enabling: start in closed position, reset timer
         isOpen = false;
-        servo.write(0);
+        servo.write(90);
         stateStartTime = millis();
     }
 }
@@ -56,13 +56,13 @@ void SeedDispenser::update() {
     if (isOpen) {
         if (timeInState >= openDuration) {
             isOpen = false;
-            servo.write(0); // Close (0 degrees)
+            servo.write(90); // Close (90 degrees)
             stateStartTime = currentMillis;
         }
     } else {
         if (timeInState >= closedInterval) {
             isOpen = true;
-            servo.write(60); // Open (60 degrees)
+            servo.write(0); // Open (0 degrees)
             stateStartTime = currentMillis;
         }
     }
