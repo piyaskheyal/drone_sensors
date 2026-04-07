@@ -10,7 +10,7 @@
 const char *ssid = "drone_network";
 const char *password = "drone_pass";
 
-#define DEBUG 0 // Set to 1 to see prints, 0 to hide them
+#define DEBUG 1 // Set to 1 to see prints, 0 to hide them
 
 // Hardware Pins (ADC1 pins: 32, 33, 34, 35, 36, 39 to work with WiFi active)
 #define GAS_PIN 32
@@ -19,6 +19,10 @@ const char *password = "drone_pass";
 #define DHT_PIN 4
 
 uint16_t currentGasThreshold = 700;
+float dispenserMinSec = 1.0;
+float dispenserMaxSec = 5.0;
+float dispenserStepSec = 0.5;
+
 GasSensor gasSensor(GAS_PIN, currentGasThreshold);
 SoilSensor soilSensor(SOIL_PIN);
 SeedDispenser dispenser(SERVO_PIN);
@@ -93,9 +97,10 @@ const char index_html[] PROGMEM = R"rawliteral(
                     <span id="dispenserStatusText">System Off</span>
                 </label>
             </div>
-            <p>Frequency: <span id="dispenserInterval">--</span> s</p>
+            <p>Current Frequency: <span id="dispenserInterval">--</span> s</p>
             <div style="margin-top: 15px;">
-                <input type="range" id="intervalSlider" min="1" max="5" step="0.1" value="2" style="width: 100%;">
+                <label style="display:block; margin-bottom: 5px; font-weight: bold;">Set to: <span id="sliderValueDisplay">2.0</span> s</label>
+                <input type="range" id="intervalSlider" min="1" max="5" step="0.5" value="2" style="width: 100%;" oninput="document.getElementById('sliderValueDisplay').innerText = this.value">
                 <button onclick="updateInterval()" style="margin-top: 10px; width: 100%; padding: 10px; border-radius: 5px; background: #f39c12; color: white; border: none; font-weight: bold; cursor: pointer;">Set Frequency</button>
             </div>
         </div>
@@ -159,6 +164,16 @@ const char index_html[] PROGMEM = R"rawliteral(
                 let intervalSec = (data.dispenser.interval / 1000.0).toFixed(1);
                 document.getElementById('dispenserInterval').innerText = intervalSec;
                 
+                let slider = document.getElementById('intervalSlider');
+                if (!slider.hasAttribute('data-initialized')) {
+                    slider.min = data.dispenser.min;
+                    slider.max = data.dispenser.max;
+                    slider.step = data.dispenser.step;
+                    slider.value = intervalSec;
+                    document.getElementById('sliderValueDisplay').innerText = intervalSec;
+                    slider.setAttribute('data-initialized', 'true');
+                }
+                
                 let toggle = document.getElementById('dispenserToggle');
                 let statusText = document.getElementById('dispenserStatusText');
                 
@@ -219,7 +234,10 @@ void setupRouting()
         json += "\"dht\":{\"temperature\":" + String(latestReadings.temperatureCelsius, 1) + ",";
         json += "\"humidity\":" + String(latestReadings.humidityPercent, 1) + "},";
         json += "\"dispenser\":{\"interval\":" + String(latestReadings.dispenserInterval) + ",";
-        json += "\"enabled\":" + String(latestReadings.dispenserEnabled ? "true" : "false") + "}}";
+        json += "\"enabled\":" + String(latestReadings.dispenserEnabled ? "true" : "false") + ",";
+        json += "\"min\":" + String(dispenserMinSec, 1) + ",";
+        json += "\"max\":" + String(dispenserMaxSec, 1) + ",";
+        json += "\"step\":" + String(dispenserStepSec, 1) + "}}";
         request->send(200, "application/json", json); });
 
     server.on("/api/set_interval", HTTP_POST, [](AsyncWebServerRequest *request)
